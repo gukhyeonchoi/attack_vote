@@ -59,18 +59,17 @@
       }
 
       // ===== 보너스 자리 풀 초기화 =====
-      // Firebase에 bonusSeats 없으면 28자리 중 7자리를 미리 랜덤 지정
+      // 테이블당 정확히 1명 보장: 각 테이블(1~7)에서 1~4번 자리 중 1개씩 랜덤 지정
       const bonusSnap = await get(ref(db, "bonusSeats"));
       let bonusSeats;
       if (!bonusSnap.exists()) {
-        // 1~28 중 7개를 랜덤 추출
-        const allNums = Array.from({ length: 28 }, (_, i) => i + 1);
-        // Fisher-Yates 셔플 후 앞 7개
-        for (let i = allNums.length - 1; i > 0; i--) {
-          const j = Math.floor(Math.random() * (i + 1));
-          [allNums[i], allNums[j]] = [allNums[j], allNums[i]];
+        bonusSeats = [];
+        for (let t = 1; t <= TOTAL_TABLES; t++) {
+          // 테이블 t의 seatNum 범위: (t-1)*4+1 ~ t*4
+          const seatInTable = Math.floor(Math.random() * SEATS_PER_TABLE) + 1;
+          const seatNum = (t - 1) * SEATS_PER_TABLE + seatInTable;
+          bonusSeats.push(seatNum);
         }
-        bonusSeats = allNums.slice(0, 7);
         await set(ref(db, "bonusSeats"), bonusSeats);
       } else {
         bonusSeats = bonusSnap.val();
