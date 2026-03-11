@@ -104,22 +104,26 @@
       const seatInTable = freeSeats[Math.floor(Math.random() * freeSeats.length)];
       const seatNum = (tableNum - 1) * SEATS_PER_TABLE + seatInTable;
 
-      // 보너스 체크: 이 테이블이 4명 채워지는 순간
+      // ===== 보너스 로직 =====
+      // - 1~3번째: 1/28 확률로 즉시 당첨
+      // - 4번째(테이블 완성): 테이블에 당첨자 없으면 100% 당첨
       let bonus = null;
-      const currentTableMembers = members.filter(m => m.tableNum === tableNum);
-      if (currentTableMembers.length === 3) {
-        // 4번째 자리 → 테이블 완성 → 랜덤 보너스
-        const allFour = [...currentTableMembers, { uid, name }];
-        const bonusIdx = Math.floor(Math.random() * 4);
-        const bonusMember = allFour[bonusIdx];
-        bonus = { name: bonusMember.name, isMe: bonusMember.uid === uid };
+      const currentTableMembers = members.filter(m => parseInt(m.tableNum) === tableNum);
+      const tableHasBonus = currentTableMembers.some(m => m.bonus === true);
+      const isTableFull = currentTableMembers.length === 3; // 내가 4번째
 
-        // 기존 멤버 보너스 플래그 업데이트
-        for (const m of currentTableMembers) {
-          if (m.uid === bonusMember.uid) {
-            await set(ref(db, `seats/${m.uid}/bonus`), true);
-          }
-        }
+      let isBonusWinner = false;
+
+      if (isTableFull && !tableHasBonus) {
+        // 4번째 입장 + 테이블에 당첨자 없음 → 100% 당첨
+        isBonusWinner = true;
+      } else if (!isTableFull && !tableHasBonus) {
+        // 1~3번째 입장 + 테이블에 당첨자 없음 → 1/28 확률
+        isBonusWinner = Math.random() < (1 / 28);
+      }
+
+      if (isBonusWinner) {
+        bonus = { name, isMe: true };
       }
 
       // 저장
@@ -223,9 +227,20 @@
         location.reload();
       };
 
-      // 실시간 보드 업데이트
+      // 실시간 보드 업데이트 + 내 보너스 당첨 감지
       onValue(ref(db, "seats"), snap => {
-        renderBoard(snap.val() || {});
+        const data = snap.val() || {};
+        renderBoard(data);
+
+        // 내 자리에 보너스가 새로 생겼는지 확인
+        const myData = data[uid];
+        if (myData && myData.bonus && !document.getElementById("bonusAnnounce").classList.contains("bonus-shown")) {
+          document.getElementById("bonusAnnounce").classList.remove("hidden");
+          document.getElementById("bonusAnnounce").classList.add("bonus-shown");
+          document.getElementById("bonusWinner").textContent = myData.name;
+          document.getElementById("bonusTable").textContent = myData.tableNum;
+          launchConfetti("#c89b3c");
+        }
       });
 
       // ===== 룰렛 =====
