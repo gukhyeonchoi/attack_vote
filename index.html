@@ -161,16 +161,17 @@
           return;
         }
 
-        // 룰렛 화면으로
+        // 룰렛 화면으로 (Firebase 배정 먼저, 결과 테이블번호로 룰렛 멈춤)
         document.getElementById("roulette-name").textContent = name + "님의";
         showScreen("roulette");
-        startRoulette(async () => {
-          const result = await assignSeat(uid, name, role);
-          if (result.error) {
-            alert(result.error);
-            showScreen("form");
-            return;
-          }
+
+        const result = await assignSeat(uid, name, role);
+        if (result.error) {
+          alert(result.error);
+          showScreen("form");
+          return;
+        }
+        startRoulette(result.tableNum, () => {
           showResultScreen({ name, role, tableNum: result.tableNum, seatNum: result.seatNum });
         });
       });
@@ -274,7 +275,8 @@
     });
 
     // ===== 룰렛 애니메이션 =====
-    function startRoulette(callback) {
+    // finalTable: 실제 배정된 테이블 번호 (이 숫자로 멈춤)
+    function startRoulette(finalTable, callback) {
       const display = document.getElementById("roulette-display");
       const tableNums = Array.from({ length: 7 }, (_, i) => i + 1);
       let count = 0;
@@ -282,7 +284,12 @@
       let speed = 60;
 
       function tick() {
-        const num = tableNums[Math.floor(Math.random() * tableNums.length)];
+        // 마지막 틱에서는 실제 배정 번호로 고정
+        const isLast = count === maxCount - 1;
+        const num = isLast
+          ? finalTable
+          : tableNums[Math.floor(Math.random() * tableNums.length)];
+
         display.textContent = num + "번 테이블";
         count++;
 
