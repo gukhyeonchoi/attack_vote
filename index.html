@@ -44,7 +44,7 @@
       return uid;
     }
 
-    // ===== 자리 배정 (직군 스프레드 + 음주 분리) =====
+    // ===== 자리 배정 (직군 스프레드 + 음주 분리 + 공평한 보너스) =====
     async function assignSeat(uid, name, job, drink) {
       const snap = await get(ref(db, "seats"));
       const seatsData = snap.val() || {};
@@ -58,6 +58,24 @@
         return { error: "모든 자리가 찼습니다! (28/28)" };
       }
 
+      // ===== 보너스 자리 풀 초기화 =====
+      // Firebase에 bonusSeats 없으면 28자리 중 7자리를 미리 랜덤 지정
+      const bonusSnap = await get(ref(db, "bonusSeats"));
+      let bonusSeats;
+      if (!bonusSnap.exists()) {
+        // 1~28 중 7개를 랜덤 추출
+        const allNums = Array.from({ length: 28 }, (_, i) => i + 1);
+        // Fisher-Yates 셔플 후 앞 7개
+        for (let i = allNums.length - 1; i > 0; i--) {
+          const j = Math.floor(Math.random() * (i + 1));
+          [allNums[i], allNums[j]] = [allNums[j], allNums[i]];
+        }
+        bonusSeats = allNums.slice(0, 7);
+        await set(ref(db, "bonusSeats"), bonusSeats);
+      } else {
+        bonusSeats = bonusSnap.val();
+      }
+
       // 테이블별 현황 (tableNum을 항상 숫자로 변환)
       const tableInfo = {};
       for (let t = 1; t <= TOTAL_TABLES; t++) {
@@ -65,7 +83,7 @@
       }
       members.forEach(m => {
         const tNum = parseInt(m.tableNum);
-        if (!tableInfo[tNum]) return; // 범위 밖이면 스킵
+        if (!tableInfo[tNum]) return;
         tableInfo[tNum].total++;
         tableInfo[tNum].jobs[m.job] = (tableInfo[tNum].jobs[m.job] || 0) + 1;
         if (m.drink) tableInfo[tNum].drinks[m.drink] = (tableInfo[tNum].drinks[m.drink] || 0) + 1;
@@ -99,37 +117,20 @@
       const tableNum = picked.tableNum;
 
       // 빈 좌석 번호
-      const takenInTable = members.filter(m => m.tableNum === tableNum).map(m => m.seatInTable);
+      const takenInTable = members.filter(m => parseInt(m.tableNum) === tableNum).map(m => m.seatInTable);
       const freeSeats = [1,2,3,4].filter(s => !takenInTable.includes(s));
       const seatInTable = freeSeats[Math.floor(Math.random() * freeSeats.length)];
       const seatNum = (tableNum - 1) * SEATS_PER_TABLE + seatInTable;
 
-      // ===== 보너스 로직 =====
-      // - 1~3번째: 1/28 확률로 즉시 당첨
-      // - 4번째(테이블 완성): 테이블에 당첨자 없으면 100% 당첨
-      let bonus = null;
-      const currentTableMembers = members.filter(m => parseInt(m.tableNum) === tableNum);
-      const tableHasBonus = currentTableMembers.some(m => m.bonus === true);
-      const isTableFull = currentTableMembers.length === 3; // 내가 4번째
-
-      let isBonusWinner = false;
-
-      if (isTableFull && !tableHasBonus) {
-        // 4번째 입장 + 테이블에 당첨자 없음 → 100% 당첨
-        isBonusWinner = true;
-      } else if (!isTableFull && !tableHasBonus) {
-        // 1~3번째 입장 + 테이블에 당첨자 없음 → 1/28 확률
-        isBonusWinner = Math.random() < (1 / 28);
-      }
-
-      if (isBonusWinner) {
-        bonus = { name, isMe: true };
-      }
+      // ===== 보너스 체크 =====
+      // 내 seatNum이 미리 지정된 7개 당첨 자리 중 하나인지 확인
+      const isBonusWinner = bonusSeats.includes(seatNum);
+      const bonus = isBonusWinner ? { name, isMe: true } : null;
 
       // 저장
       await set(ref(db, `seats/${uid}`), {
         uid, name, job, drink, seatNum, tableNum, seatInTable,
-        bonus: bonus?.isMe || false,
+        bonus: isBonusWinner,
         timestamp: Date.now()
       });
 
@@ -223,6 +224,7 @@
         if (pw !== "hoesik2025") { showToast("비밀번호 오류"); return; }
         if (!confirm("전체 초기화하시겠습니까?")) return;
         await set(ref(db, "seats"), null);
+        await set(ref(db, "bonusSeats"), null);
         localStorage.removeItem("dinner_uid");
         location.reload();
       };
@@ -300,6 +302,29 @@
 
         const container = document.getElementById("tablesGrid");
         container.innerHTML = "";
+
+        // 보너스 명단 렌더링
+        const bonusMembers = members.filter(m => m.bonus === true);
+        const bonusListEl = document.getElementById("bonusList");
+        const bonusCountEl = document.getElementById("bonusListCount");
+        if (bonusCountEl) bonusCountEl.textContent = `${bonusMembers.length} / 7`;
+        if (bonusListEl) {
+          if (bonusMembers.length === 0) {
+            bonusListEl.innerHTML = `<div class="bls-empty">아직 당첨자가 없습니다</div>`;
+          } else {
+            bonusListEl.innerHTML = bonusMembers.map(m => {
+              const ji = JOB_INFO[m.job] || { color: "#fff", icon: "👤" };
+              return `<div class="bls-item">
+                <span class="bls-item-crown">👑</span>
+                <span class="bls-item-name">${m.name}</span>
+                <span class="bls-item-meta">
+                  <span style="color:${ji.color}">${ji.icon} ${m.job}</span>
+                  <span class="bls-table">TABLE ${m.tableNum}</span>
+                </span>
+              </div>`;
+            }).join("");
+          }
+        }
 
         // 테이블별 정리
         const tables = {};
@@ -1062,6 +1087,80 @@
     }
     .shake { animation: shake 0.4s ease; }
 
+    /* ===== 보너스 명단 섹션 ===== */
+    .bonus-list-section {
+      max-width: 860px;
+      margin: 0 auto 28px;
+      background: linear-gradient(135deg, #1a1000, #0f0a00);
+      border: 1px solid var(--gold-dim);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .bls-header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 14px 20px;
+      background: linear-gradient(90deg, #2a1800, #1a1000);
+      border-bottom: 1px solid var(--border-gold);
+    }
+    .bls-crown { font-size: 20px; }
+    .bls-title {
+      font-family: 'Rajdhani', sans-serif;
+      font-size: 12px;
+      letter-spacing: 4px;
+      color: var(--gold);
+      text-transform: uppercase;
+      flex: 1;
+    }
+    .bls-count {
+      font-family: 'Rajdhani', sans-serif;
+      font-size: 13px;
+      color: var(--gold-dim);
+      letter-spacing: 1px;
+    }
+    .bonus-list-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+      gap: 1px;
+      background: var(--border-gold);
+    }
+    .bls-item {
+      background: #0f0a00;
+      padding: 12px 16px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      animation: fadeUp 0.3s ease;
+    }
+    .bls-item-crown { font-size: 16px; flex-shrink: 0; }
+    .bls-item-name {
+      font-weight: 700;
+      color: var(--gold-light);
+      font-size: 14px;
+      flex: 1;
+    }
+    .bls-item-meta {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-end;
+      gap: 2px;
+      font-size: 11px;
+    }
+    .bls-table {
+      font-family: 'Rajdhani', sans-serif;
+      color: var(--gold-dim);
+      letter-spacing: 1px;
+    }
+    .bls-empty {
+      padding: 20px;
+      text-align: center;
+      color: var(--text-dim);
+      font-family: 'Rajdhani', sans-serif;
+      font-size: 13px;
+      letter-spacing: 2px;
+    }
+
     /* 구분선 */
     .divider {
       border: none;
@@ -1201,6 +1300,17 @@
         <button class="btn-ghost" id="closeBoardBtn">✕ 닫기</button>
       </div>
     </div>
+
+    <!-- 👑 메뉴 선택권 명단 -->
+    <div id="bonusListSection" class="bonus-list-section">
+      <div class="bls-header">
+        <span class="bls-crown">👑</span>
+        <span class="bls-title">MENU PICK WINNERS</span>
+        <span class="bls-count" id="bonusListCount">0 / 7</span>
+      </div>
+      <div id="bonusList" class="bonus-list-grid"></div>
+    </div>
+
     <div id="tablesGrid"></div>
   </div>
 
