@@ -168,7 +168,8 @@
         const name = document.getElementById("nameInput").value.trim();
         const job = document.getElementById("jobSelect").value;
         if (!name) { shake(document.getElementById("nameInput")); return; }
-        if (!drinkChoice) { shake(document.getElementById("drinkYes")); shake(document.getElementById("drinkNo")); return; }
+        if (!job) { shake(document.getElementById("jobSelect")); showToast("직군을 선택해주세요!"); return; }
+        if (!drinkChoice) { shake(document.getElementById("drinkYes")); shake(document.getElementById("drinkNo")); showToast("음주 여부를 선택해주세요!"); return; }
 
         // 이미 참가 재확인
         const snap = await get(ref(db, `seats/${uid}`));
@@ -1088,6 +1089,7 @@
           <div class="form-field">
             <label>Role</label>
             <select class="lol-select" id="jobSelect">
+              <option value="" disabled selected>직군 선택</option>
               <option value="개발">💻 개발</option>
               <option value="아트">🎨 아트</option>
               <option value="기획">📋 기획</option>
