@@ -58,40 +58,75 @@
       return a;
     }
 
-    // ===== 자리 배정 로직 =====
-    async function assignSeat(uid, name, role) {
-      const seatsRef = ref(db, "seats");
-      const membersRef = ref(db, "members");
-
-      // 현재 배정된 자리 목록 가져오기
-      const seatsSnap = await get(seatsRef);
+    // ===== 자리 배정 로직 (직군 스프레드 + 음주 분리) =====
+    async function assignSeat(uid, name, role, drink) {
+      const seatsSnap = await get(ref(db, "seats"));
       const seatsData = seatsSnap.val() || {};
+      const members = Object.values(seatsData);
 
-      // 이미 배정된 자리 번호 목록
-      const takenSeats = Object.values(seatsData).map(s => s.seatNum);
-
-      // 남은 자리 번호
-      const allSeats = Array.from({ length: TOTAL_SEATS }, (_, i) => i + 1);
-      const available = allSeats.filter(s => !takenSeats.includes(s));
-
-      if (available.length === 0) {
+      if (members.length >= TOTAL_SEATS) {
         return { error: "자리가 모두 찼습니다!" };
       }
 
-      // 랜덤 자리 선택
-      const shuffled = shuffle(available);
-      const seatNum = shuffled[0];
-      const tableNum = Math.ceil(seatNum / SEATS_PER_TABLE);
-      const seatInTable = ((seatNum - 1) % SEATS_PER_TABLE) + 1;
+      // 테이블별 현황 파악
+      const tableInfo = {};
+      for (let t = 1; t <= TOTAL_TABLES; t++) {
+        tableInfo[t] = { total: 0, roles: {}, drinks: { "음주": 0, "비음주": 0 } };
+      }
+      members.forEach(m => {
+        tableInfo[m.tableNum].total++;
+        tableInfo[m.tableNum].roles[m.role] = (tableInfo[m.tableNum].roles[m.role] || 0) + 1;
+        if (m.drink) tableInfo[m.tableNum].drinks[m.drink] = (tableInfo[m.tableNum].drinks[m.drink] || 0) + 1;
+      });
+
+      // 빈 자리가 있는 테이블만 후보로
+      let candidates = Object.entries(tableInfo)
+        .filter(([, info]) => info.total < SEATS_PER_TABLE)
+        .map(([t, info]) => ({ tableNum: parseInt(t), ...info }));
+
+      // ── 1순위: 해당 직군 없는 테이블 필터 ──
+      let preferred = candidates.filter(t => !t.roles[role]);
+      if (preferred.length === 0) {
+        const minRole = Math.min(...candidates.map(t => t.roles[role] || 0));
+        preferred = candidates.filter(t => (t.roles[role] || 0) === minRole);
+      }
+      if (preferred.length === 0) preferred = [...candidates];
+
+      // ── 2순위 (보조): 음주 성향 같은 사람이 많은 테이블 우선 ──
+      // 반대 성향이 가장 적은 테이블을 선호
+      const opposite = drink === "음주" ? "비음주" : "음주";
+      preferred.sort((a, b) => {
+        const oppA = a.drinks[opposite] || 0;
+        const oppB = b.drinks[opposite] || 0;
+        const sameA = a.drinks[drink] || 0;
+        const sameB = b.drinks[drink] || 0;
+        // 반대 성향 적을수록, 같은 성향 많을수록 우선
+        return (oppA - sameA) - (oppB - sameB);
+      });
+
+      // 정렬 후 동점 그룹 중 랜덤 선택 (완전 결정적이지 않게)
+      const bestScore = (preferred[0].drinks[opposite] || 0) - (preferred[0].drinks[drink] || 0);
+      const topGroup = preferred.filter(t =>
+        ((t.drinks[opposite] || 0) - (t.drinks[drink] || 0)) === bestScore
+      );
+      const picked = topGroup[Math.floor(Math.random() * topGroup.length)];
+      const tableNum = picked.tableNum;
+
+      // 해당 테이블의 빈 자리 번호 계산
+      const takenInTable = members
+        .filter(m => m.tableNum === tableNum)
+        .map(m => m.seatInTable);
+      const availableInTable = [1,2,3,4].filter(s => !takenInTable.includes(s));
+      const seatInTable = availableInTable[Math.floor(Math.random() * availableInTable.length)];
+      const seatNum = (tableNum - 1) * SEATS_PER_TABLE + seatInTable;
 
       // Firebase에 저장
       await set(ref(db, `seats/${uid}`), {
-        uid, name, role, seatNum, tableNum, seatInTable,
+        uid, name, role, drink, seatNum, tableNum, seatInTable,
         timestamp: Date.now()
       });
-
       await set(ref(db, `members/${uid}`), {
-        uid, name, role, voted: true, timestamp: Date.now()
+        uid, name, role, drink, voted: true, timestamp: Date.now()
       });
 
       return { seatNum, tableNum, seatInTable };
@@ -130,6 +165,18 @@
         showScreen("form");
       });
 
+      // --- 음주 토글 ---
+      document.getElementById("drink-yes").addEventListener("click", () => {
+        document.getElementById("select-drink").value = "음주";
+        document.getElementById("drink-yes").classList.add("selected-yes");
+        document.getElementById("drink-no").classList.remove("selected-no");
+      });
+      document.getElementById("drink-no").addEventListener("click", () => {
+        document.getElementById("select-drink").value = "비음주";
+        document.getElementById("drink-no").classList.add("selected-no");
+        document.getElementById("drink-yes").classList.remove("selected-yes");
+      });
+
       // --- 자리보기 버튼 ---
       document.getElementById("btn-view-board").addEventListener("click", () => {
         showScreen("board");
@@ -144,6 +191,7 @@
       document.getElementById("btn-submit").addEventListener("click", async () => {
         const name = document.getElementById("input-name").value.trim();
         const role = document.getElementById("select-role").value;
+        const drink = document.getElementById("select-drink").value;
 
         if (!name) {
           shakeElement(document.getElementById("input-name"));
@@ -151,6 +199,11 @@
         }
         if (!role) {
           shakeElement(document.getElementById("select-role"));
+          return;
+        }
+        if (!drink) {
+          shakeElement(document.getElementById("drink-yes"));
+          shakeElement(document.getElementById("drink-no"));
           return;
         }
 
@@ -165,14 +218,14 @@
         document.getElementById("roulette-name").textContent = name + "님의";
         showScreen("roulette");
 
-        const result = await assignSeat(uid, name, role);
+        const result = await assignSeat(uid, name, role, drink);
         if (result.error) {
           alert(result.error);
           showScreen("form");
           return;
         }
         startRoulette(result.tableNum, () => {
-          showResultScreen({ name, role, tableNum: result.tableNum, seatNum: result.seatNum });
+          showResultScreen({ name, role, drink, tableNum: result.tableNum, seatNum: result.seatNum });
         });
       });
 
@@ -183,7 +236,7 @@
 
         document.getElementById("result-emoji").textContent = roleInfo.emoji;
         document.getElementById("result-name").textContent = name + "님";
-        document.getElementById("result-role").textContent = role;
+        document.getElementById("result-role").textContent = role + (data.drink ? "  " + (data.drink === "음주" ? "🍺" : "🧃") : "");
         document.getElementById("result-table").textContent = tableNum + "번 테이블";
         document.getElementById("result-seat").textContent = "전체 " + seatNum + "번 자리";
 
@@ -232,10 +285,11 @@
               if (member) {
                 const roleInfo = ROLE_COLORS[member.role] || { accent: "#fff", emoji: "👤" };
                 seatEl.style.borderColor = roleInfo.accent;
+                const drinkIcon = member.drink === "음주" ? "🍺" : member.drink === "비음주" ? "🧃" : "";
                 seatEl.innerHTML = `
                   <span class="seat-emoji">${roleInfo.emoji}</span>
                   <span class="seat-name">${member.name}</span>
-                  <span class="seat-role" style="color:${roleInfo.accent}">${member.role}</span>
+                  <span class="seat-role" style="color:${roleInfo.accent}">${member.role} ${drinkIcon}</span>
                 `;
               } else {
                 seatEl.innerHTML = `<span class="seat-empty-text">빈자리</span>`;
@@ -755,6 +809,34 @@
     }
     .btn-back:hover { color: var(--text); border-color: #555; }
 
+    /* ===== 음주 토글 ===== */
+    .drink-toggle {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+    }
+    .drink-btn {
+      padding: 14px 10px;
+      background: #ffffff0a;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      color: var(--muted);
+      font-size: 15px;
+      font-family: 'Nanum Gothic', sans-serif;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .drink-btn.selected-yes {
+      background: #1a3a1a;
+      border-color: #ffd700;
+      color: #ffd700;
+    }
+    .drink-btn.selected-no {
+      background: #1a2a3a;
+      border-color: #4fc3f7;
+      color: #4fc3f7;
+    }
+
     /* ===== 관리자 ===== */
     .admin-row {
       text-align: center;
@@ -833,6 +915,14 @@
           <option value="아트">🎨 아트</option>
           <option value="기획">📋 기획</option>
         </select>
+      </div>
+      <div class="form-group">
+        <label class="form-label">음주 여부</label>
+        <div class="drink-toggle">
+          <button type="button" class="drink-btn" id="drink-yes" data-value="음주">🍺 음주 희망</button>
+          <button type="button" class="drink-btn" id="drink-no" data-value="비음주">🧃 비음주</button>
+        </div>
+        <input type="hidden" id="select-drink" value="" />
       </div>
       <button class="btn btn-primary" id="btn-submit">
         🎰 지금 뽑기!
