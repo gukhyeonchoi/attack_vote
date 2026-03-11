@@ -1,15 +1,17 @@
 <!DOCTYPE html>
 <html lang="ko">
 <head>
-  <meta charset="UTF-8" />
+  <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>🍻 회식 자리 뽑기</title>
+  <title>🍻 TEAM DINNER MATCHMAKING</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com"/>
+  <link href="https://fonts.googleapis.com/css2?family=Cinzel+Decorative:wght@700&family=Rajdhani:wght@400;600;700&family=Nanum+Gothic:wght@400;700&display=swap" rel="stylesheet"/>
 
-  <!-- Firebase SDK -->
   <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
-    import { getDatabase, ref, set, get, onValue, update } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js";
+    import { getDatabase, ref, set, get, onValue } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js";
 
+    // ✅ Firebase 설정
     const firebaseConfig = {
       apiKey: "AIzaSyDIgAP2i_YbTLQ4T097iN2cyhs9r40VuZ4",
       authDomain: "gukhyeon-ce3ba.firebaseapp.com",
@@ -17,968 +19,1173 @@
       projectId: "gukhyeon-ce3ba",
       storageBucket: "gukhyeon-ce3ba.firebasestorage.app",
       messagingSenderId: "751956972723",
-      appId: "1:751956972723:web:2afb50ab17112b062e8cc6",
-      measurementId: "G-X44N3X1EN6"
+      appId: "1:751956972723:web:2afb50ab17112b062e8cc6"
     };
 
     const app = initializeApp(firebaseConfig);
     const db = getDatabase(app);
 
-    // ===== 설정값 =====
     const TOTAL_TABLES = 7;
     const SEATS_PER_TABLE = 4;
-    const TOTAL_SEATS = TOTAL_TABLES * SEATS_PER_TABLE; // 28
 
-    // 직군 색상
-    const ROLE_COLORS = {
-      "개발": { bg: "#1e3a5f", accent: "#4fc3f7", emoji: "💻" },
-      "아트": { bg: "#3a1e5f", accent: "#ce93d8", emoji: "🎨" },
-      "기획": { bg: "#1e5f3a", accent: "#80cbc4", emoji: "📋" }
+    const JOB_INFO = {
+      "개발": { color: "#4fc3f7", icon: "💻" },
+      "아트": { color: "#ce93d8", icon: "🎨" },
+      "기획": { color: "#80cbc4", icon: "📋" }
     };
 
-    // ===== 유틸 =====
-    function getStorageKey() { return "hoesik_voted_uid"; }
-
-    function getOrCreateUID() {
-      let uid = localStorage.getItem(getStorageKey());
+    // UID (localStorage 기반)
+    function getUID() {
+      let uid = localStorage.getItem("dinner_uid");
       if (!uid) {
-        uid = "user_" + Math.random().toString(36).substr(2, 9) + "_" + Date.now();
-        localStorage.setItem(getStorageKey(), uid);
+        uid = "u_" + Math.random().toString(36).substr(2, 9) + "_" + Date.now();
+        localStorage.setItem("dinner_uid", uid);
       }
       return uid;
     }
 
-    // Fisher-Yates 셔플
-    function shuffle(arr) {
-      const a = [...arr];
-      for (let i = a.length - 1; i > 0; i--) {
-        const j = Math.floor(Math.random() * (i + 1));
-        [a[i], a[j]] = [a[j], a[i]];
-      }
-      return a;
-    }
-
-    // ===== 자리 배정 로직 (직군 스프레드 + 음주 분리) =====
-    async function assignSeat(uid, name, role, drink) {
-      const seatsSnap = await get(ref(db, "seats"));
-      const seatsData = seatsSnap.val() || {};
+    // ===== 자리 배정 (직군 스프레드 + 음주 분리) =====
+    async function assignSeat(uid, name, job, drink) {
+      const snap = await get(ref(db, "seats"));
+      const seatsData = snap.val() || {};
       const members = Object.values(seatsData);
 
-      if (members.length >= TOTAL_SEATS) {
-        return { error: "자리가 모두 찼습니다!" };
+      // 중복 이름 체크
+      if (members.find(m => m.name === name)) {
+        return { error: "이미 같은 이름이 등록되어 있습니다!" };
+      }
+      if (members.length >= TOTAL_TABLES * SEATS_PER_TABLE) {
+        return { error: "모든 자리가 찼습니다! (28/28)" };
       }
 
-      // 테이블별 현황 파악
+      // 테이블별 현황 (tableNum을 항상 숫자로 변환)
       const tableInfo = {};
       for (let t = 1; t <= TOTAL_TABLES; t++) {
-        tableInfo[t] = { total: 0, roles: {}, drinks: { "음주": 0, "비음주": 0 } };
+        tableInfo[t] = { total: 0, jobs: {}, drinks: { "음주": 0, "비음주": 0 } };
       }
       members.forEach(m => {
-        tableInfo[m.tableNum].total++;
-        tableInfo[m.tableNum].roles[m.role] = (tableInfo[m.tableNum].roles[m.role] || 0) + 1;
-        if (m.drink) tableInfo[m.tableNum].drinks[m.drink] = (tableInfo[m.tableNum].drinks[m.drink] || 0) + 1;
+        const tNum = parseInt(m.tableNum);
+        if (!tableInfo[tNum]) return; // 범위 밖이면 스킵
+        tableInfo[tNum].total++;
+        tableInfo[tNum].jobs[m.job] = (tableInfo[tNum].jobs[m.job] || 0) + 1;
+        if (m.drink) tableInfo[tNum].drinks[m.drink] = (tableInfo[tNum].drinks[m.drink] || 0) + 1;
       });
 
-      // 빈 자리가 있는 테이블만 후보로
+      // 빈 자리 있는 테이블만
       let candidates = Object.entries(tableInfo)
         .filter(([, info]) => info.total < SEATS_PER_TABLE)
         .map(([t, info]) => ({ tableNum: parseInt(t), ...info }));
 
-      // ── 1순위: 해당 직군 없는 테이블 필터 ──
-      let preferred = candidates.filter(t => !t.roles[role]);
+      // 1순위: 내 직군 없는 테이블
+      let preferred = candidates.filter(t => !t.jobs[job]);
       if (preferred.length === 0) {
-        const minRole = Math.min(...candidates.map(t => t.roles[role] || 0));
-        preferred = candidates.filter(t => (t.roles[role] || 0) === minRole);
+        const minJob = Math.min(...candidates.map(t => t.jobs[job] || 0));
+        preferred = candidates.filter(t => (t.jobs[job] || 0) === minJob);
       }
       if (preferred.length === 0) preferred = [...candidates];
 
-      // ── 2순위 (보조): 음주 성향 같은 사람이 많은 테이블 우선 ──
-      // 반대 성향이 가장 적은 테이블을 선호
+      // 2순위(보조): 반대 음주 성향 적은 테이블
       const opposite = drink === "음주" ? "비음주" : "음주";
       preferred.sort((a, b) => {
-        const oppA = a.drinks[opposite] || 0;
-        const oppB = b.drinks[opposite] || 0;
-        const sameA = a.drinks[drink] || 0;
-        const sameB = b.drinks[drink] || 0;
-        // 반대 성향 적을수록, 같은 성향 많을수록 우선
-        return (oppA - sameA) - (oppB - sameB);
+        const scoreA = (a.drinks[opposite] || 0) - (a.drinks[drink] || 0);
+        const scoreB = (b.drinks[opposite] || 0) - (b.drinks[drink] || 0);
+        return scoreA - scoreB;
       });
 
-      // 정렬 후 동점 그룹 중 랜덤 선택 (완전 결정적이지 않게)
+      // 동점 그룹 중 랜덤
       const bestScore = (preferred[0].drinks[opposite] || 0) - (preferred[0].drinks[drink] || 0);
-      const topGroup = preferred.filter(t =>
-        ((t.drinks[opposite] || 0) - (t.drinks[drink] || 0)) === bestScore
-      );
+      const topGroup = preferred.filter(t => ((t.drinks[opposite] || 0) - (t.drinks[drink] || 0)) === bestScore);
       const picked = topGroup[Math.floor(Math.random() * topGroup.length)];
       const tableNum = picked.tableNum;
 
-      // 해당 테이블의 빈 자리 번호 계산
-      const takenInTable = members
-        .filter(m => m.tableNum === tableNum)
-        .map(m => m.seatInTable);
-      const availableInTable = [1,2,3,4].filter(s => !takenInTable.includes(s));
-      const seatInTable = availableInTable[Math.floor(Math.random() * availableInTable.length)];
+      // 빈 좌석 번호
+      const takenInTable = members.filter(m => m.tableNum === tableNum).map(m => m.seatInTable);
+      const freeSeats = [1,2,3,4].filter(s => !takenInTable.includes(s));
+      const seatInTable = freeSeats[Math.floor(Math.random() * freeSeats.length)];
       const seatNum = (tableNum - 1) * SEATS_PER_TABLE + seatInTable;
 
-      // Firebase에 저장
+      // 보너스 체크: 이 테이블이 4명 채워지는 순간
+      let bonus = null;
+      const currentTableMembers = members.filter(m => m.tableNum === tableNum);
+      if (currentTableMembers.length === 3) {
+        // 4번째 자리 → 테이블 완성 → 랜덤 보너스
+        const allFour = [...currentTableMembers, { uid, name }];
+        const bonusIdx = Math.floor(Math.random() * 4);
+        const bonusMember = allFour[bonusIdx];
+        bonus = { name: bonusMember.name, isMe: bonusMember.uid === uid };
+
+        // 기존 멤버 보너스 플래그 업데이트
+        for (const m of currentTableMembers) {
+          if (m.uid === bonusMember.uid) {
+            await set(ref(db, `seats/${m.uid}/bonus`), true);
+          }
+        }
+      }
+
+      // 저장
       await set(ref(db, `seats/${uid}`), {
-        uid, name, role, drink, seatNum, tableNum, seatInTable,
+        uid, name, job, drink, seatNum, tableNum, seatInTable,
+        bonus: bonus?.isMe || false,
         timestamp: Date.now()
       });
-      await set(ref(db, `members/${uid}`), {
-        uid, name, role, drink, voted: true, timestamp: Date.now()
-      });
 
-      return { seatNum, tableNum, seatInTable };
+      return { tableNum, seatNum, bonus };
     }
 
-    // ===== DOM 로드 후 실행 =====
+    // ===== DOM =====
     window.addEventListener("DOMContentLoaded", () => {
-      const uid = getOrCreateUID();
+      const uid = getUID();
+      let drinkChoice = null;
+      let hasJoined = false;
 
-      // --- 화면 요소 참조 ---
-      const screens = {
-        intro: document.getElementById("screen-intro"),
-        form: document.getElementById("screen-form"),
-        roulette: document.getElementById("screen-roulette"),
-        result: document.getElementById("screen-result"),
-        board: document.getElementById("screen-board"),
-      };
+      // 파티클 배경
+      initParticles();
 
-      function showScreen(name) {
-        Object.values(screens).forEach(s => s.classList.add("hidden"));
-        screens[name].classList.remove("hidden");
-      }
-
-      // --- 이미 투표했는지 확인 ---
+      // 이미 참가했는지 확인
       get(ref(db, `seats/${uid}`)).then(snap => {
         if (snap.exists()) {
-          const data = snap.val();
-          showResultScreen(data);
+          const d = snap.val();
+          hasJoined = true;
+          showPhase("result");
+          displayResult(d.tableNum, d.name, d.job, d.drink, d.bonus ? { name: d.name, isMe: true } : null, true);
         } else {
-          showScreen("intro");
+          showPhase("form");
         }
       });
 
-      // --- 인트로 → 폼 ---
-      document.getElementById("btn-start").addEventListener("click", () => {
-        showScreen("form");
-      });
+      // 음주 선택
+      document.getElementById("drinkYes").onclick = () => selectDrink("음주");
+      document.getElementById("drinkNo").onclick = () => selectDrink("비음주");
+      function selectDrink(val) {
+        drinkChoice = val;
+        document.getElementById("drinkYes").classList.toggle("active", val === "음주");
+        document.getElementById("drinkNo").classList.toggle("active", val === "비음주");
+      }
 
-      // --- 음주 토글 ---
-      document.getElementById("drink-yes").addEventListener("click", () => {
-        document.getElementById("select-drink").value = "음주";
-        document.getElementById("drink-yes").classList.add("selected-yes");
-        document.getElementById("drink-no").classList.remove("selected-no");
-      });
-      document.getElementById("drink-no").addEventListener("click", () => {
-        document.getElementById("select-drink").value = "비음주";
-        document.getElementById("drink-no").classList.add("selected-no");
-        document.getElementById("drink-yes").classList.remove("selected-yes");
-      });
+      // JOIN 버튼
+      document.getElementById("joinBtn").onclick = async () => {
+        if (hasJoined) return;
+        const name = document.getElementById("nameInput").value.trim();
+        const job = document.getElementById("jobSelect").value;
+        if (!name) { shake(document.getElementById("nameInput")); return; }
+        if (!drinkChoice) { shake(document.getElementById("drinkYes")); shake(document.getElementById("drinkNo")); return; }
 
-      // --- 자리보기 버튼 ---
-      document.getElementById("btn-view-board").addEventListener("click", () => {
-        showScreen("board");
-        loadBoard();
-      });
-      document.getElementById("btn-view-board-2").addEventListener("click", () => {
-        showScreen("board");
-        loadBoard();
-      });
-
-      // --- 폼 제출 ---
-      document.getElementById("btn-submit").addEventListener("click", async () => {
-        const name = document.getElementById("input-name").value.trim();
-        const role = document.getElementById("select-role").value;
-        const drink = document.getElementById("select-drink").value;
-
-        if (!name) {
-          shakeElement(document.getElementById("input-name"));
-          return;
-        }
-        if (!role) {
-          shakeElement(document.getElementById("select-role"));
-          return;
-        }
-        if (!drink) {
-          shakeElement(document.getElementById("drink-yes"));
-          shakeElement(document.getElementById("drink-no"));
-          return;
-        }
-
-        // 이미 투표했나 재확인
+        // 이미 참가 재확인
         const snap = await get(ref(db, `seats/${uid}`));
-        if (snap.exists()) {
-          showResultScreen(snap.val());
+        if (snap.exists()) { hasJoined = true; showPhase("result"); displayResult(snap.val().tableNum, snap.val().name, snap.val().job, snap.val().drink, null, true); return; }
+
+        hasJoined = true;
+        showPhase("matching");
+        playBGM();
+
+        // Firebase 배정 먼저
+        let result;
+        try {
+          result = await assignSeat(uid, name, job, drinkChoice);
+        } catch(e) {
+          console.error("Firebase 오류:", e);
+          hasJoined = false;
+          showPhase("form");
+          showToast("연결 오류가 발생했습니다. 다시 시도해주세요.");
           return;
         }
-
-        // 룰렛 화면으로 (Firebase 배정 먼저, 결과 테이블번호로 룰렛 멈춤)
-        document.getElementById("roulette-name").textContent = name + "님의";
-        showScreen("roulette");
-
-        const result = await assignSeat(uid, name, role, drink);
         if (result.error) {
-          alert(result.error);
-          showScreen("form");
+          hasJoined = false;
+          showPhase("form");
+          showToast(result.error);
           return;
         }
-        startRoulette(result.tableNum, () => {
-          showResultScreen({ name, role, drink, tableNum: result.tableNum, seatNum: result.seatNum });
+
+        // 룰렛 애니메이션 → 결과
+        runRoulette(result.tableNum, () => {
+          showPhase("result");
+          displayResult(result.tableNum, name, job, drinkChoice, result.bonus, false);
         });
-      });
+      };
 
-      // --- 결과 화면 표시 ---
-      function showResultScreen(data) {
-        const { name, role, tableNum, seatNum } = data;
-        const roleInfo = ROLE_COLORS[role] || { bg: "#2a2a3e", accent: "#ffffff", emoji: "👤" };
+      // 자리 보기 토글
+      document.getElementById("viewBoardBtn").onclick = () => toggleBoard(true);
+      document.getElementById("viewBoardBtn2").onclick = () => toggleBoard(true);
+      document.getElementById("closeBoardBtn").onclick = () => toggleBoard(false);
 
-        document.getElementById("result-emoji").textContent = roleInfo.emoji;
-        document.getElementById("result-name").textContent = name + "님";
-        document.getElementById("result-role").textContent = role + (data.drink ? "  " + (data.drink === "음주" ? "🍺" : "🧃") : "");
-        document.getElementById("result-table").textContent = tableNum + "번 테이블";
-        document.getElementById("result-seat").textContent = "전체 " + seatNum + "번 자리";
-
-        document.getElementById("result-card").style.background =
-          `linear-gradient(135deg, ${roleInfo.bg} 0%, #0a0a1a 100%)`;
-        document.getElementById("result-accent").style.color = roleInfo.accent;
-        document.getElementById("result-table").style.color = roleInfo.accent;
-
-        showScreen("result");
-        launchConfetti(roleInfo.accent);
+      function toggleBoard(show) {
+        document.getElementById("boardOverlay").classList.toggle("hidden", !show);
       }
 
-      // --- 전체 자리 보드 로드 ---
-      function loadBoard() {
-        const boardEl = document.getElementById("tables-board");
-        boardEl.innerHTML = '<p style="color:#888">로딩 중...</p>';
-
-        onValue(ref(db, "seats"), (snap) => {
-          const data = snap.val() || {};
-          const members = Object.values(data);
-
-          // 테이블별 분류
-          const tables = {};
-          for (let t = 1; t <= TOTAL_TABLES; t++) tables[t] = [];
-          members.forEach(m => {
-            if (tables[m.tableNum]) tables[m.tableNum].push(m);
-          });
-
-          boardEl.innerHTML = "";
-          for (let t = 1; t <= TOTAL_TABLES; t++) {
-            const seats = tables[t];
-            const tableEl = document.createElement("div");
-            tableEl.className = "table-card";
-
-            const filled = seats.length;
-            const title = document.createElement("div");
-            title.className = "table-title";
-            title.innerHTML = `<span>🪑 테이블 ${t}</span><span class="seat-count">${filled}/${SEATS_PER_TABLE}</span>`;
-            tableEl.appendChild(title);
-
-            for (let s = 1; s <= SEATS_PER_TABLE; s++) {
-              const member = seats.find(m => m.seatInTable === s);
-              const seatEl = document.createElement("div");
-              seatEl.className = "seat-slot" + (member ? " filled" : " empty");
-
-              if (member) {
-                const roleInfo = ROLE_COLORS[member.role] || { accent: "#fff", emoji: "👤" };
-                seatEl.style.borderColor = roleInfo.accent;
-                const drinkIcon = member.drink === "음주" ? "🍺" : member.drink === "비음주" ? "🧃" : "";
-                seatEl.innerHTML = `
-                  <span class="seat-emoji">${roleInfo.emoji}</span>
-                  <span class="seat-name">${member.name}</span>
-                  <span class="seat-role" style="color:${roleInfo.accent}">${member.role} ${drinkIcon}</span>
-                `;
-              } else {
-                seatEl.innerHTML = `<span class="seat-empty-text">빈자리</span>`;
-              }
-              tableEl.appendChild(seatEl);
-            }
-            boardEl.appendChild(tableEl);
-          }
-
-          // 통계
-          const statsEl = document.getElementById("board-stats");
-          statsEl.textContent = `총 ${members.length}명 / 28명 배정 완료`;
-        });
-      }
-
-      // --- 뒤로가기 ---
-      document.getElementById("btn-back").addEventListener("click", () => {
-        // 투표 완료 여부에 따라 결과 or 인트로로 이동
-        get(ref(db, `seats/${uid}`)).then(snap => {
-          if (snap.exists()) showResultScreen(snap.val());
-          else showScreen("intro");
-        });
-      });
-      document.getElementById("btn-reset").addEventListener("click", async () => {
-        const pw = prompt("관리자 비밀번호를 입력하세요:");
-        if (pw !== "hoesik2025") { // ← 원하는 비밀번호로 변경 가능
-          alert("비밀번호가 틀렸습니다.");
-          return;
-        }
-        if (!confirm("모든 자리 배정을 초기화할까요?")) return;
+      // 관리자 초기화
+      document.getElementById("resetBtn").onclick = async () => {
+        const pw = prompt("관리자 비밀번호:");
+        if (pw !== "hoesik2025") { showToast("비밀번호 오류"); return; }
+        if (!confirm("전체 초기화하시겠습니까?")) return;
         await set(ref(db, "seats"), null);
-        await set(ref(db, "members"), null);
-        localStorage.removeItem(getStorageKey());
-        alert("초기화 완료! 페이지를 새로고침합니다.");
+        localStorage.removeItem("dinner_uid");
         location.reload();
+      };
+
+      // 실시간 보드 업데이트
+      onValue(ref(db, "seats"), snap => {
+        renderBoard(snap.val() || {});
       });
+
+      // ===== 룰렛 =====
+      function runRoulette(finalTable, callback) {
+        const el = document.getElementById("rouletteNum");
+        let count = 0;
+        const max = 50;
+        let speed = 50;
+
+        function spin() {
+          const isLast = count === max - 1;
+          const num = isLast ? finalTable : Math.floor(Math.random() * 7) + 1;
+          el.textContent = num;
+          count++;
+          if (count > max * 0.6) speed = 100;
+          if (count > max * 0.8) speed = 220;
+          if (count > max * 0.92) speed = 450;
+
+          if (count < max) {
+            setTimeout(spin, speed);
+          } else {
+            el.classList.add("locked");
+            playDrum();
+            setTimeout(callback, 1200);
+          }
+        }
+        spin();
+      }
+
+      // ===== 결과 표시 =====
+      function displayResult(tableNum, name, job, drink, bonus, isRevisit) {
+        const jobInfo = JOB_INFO[job] || { color: "#fff", icon: "👤" };
+        document.getElementById("resultTable").textContent = tableNum;
+        document.getElementById("resultName").textContent = name;
+        document.getElementById("resultJob").textContent = jobInfo.icon + " " + job;
+        document.getElementById("resultJob").style.color = jobInfo.color;
+        document.getElementById("resultDrink").textContent = drink === "음주" ? "🍺 음주" : "🧃 비음주";
+
+        const bonusEl = document.getElementById("bonusAnnounce");
+        if (bonus && !isRevisit) {
+          bonusEl.classList.remove("hidden");
+          document.getElementById("bonusWinner").textContent = bonus.name;
+          document.getElementById("bonusTable").textContent = tableNum;
+          launchConfetti(jobInfo.color);
+        } else {
+          bonusEl.classList.add("hidden");
+          if (!isRevisit) launchConfetti(jobInfo.color);
+        }
+      }
+
+      // ===== 보드 렌더 =====
+      function renderBoard(data) {
+        const members = Object.values(data);
+        document.getElementById("totalCount").textContent = members.length;
+        const tc2 = document.getElementById("totalCount2");
+        if (tc2) tc2.textContent = members.length;
+
+        const container = document.getElementById("tablesGrid");
+        container.innerHTML = "";
+
+        // 테이블별 정리
+        const tables = {};
+        for (let t = 1; t <= TOTAL_TABLES; t++) tables[t] = [];
+        members.forEach(m => { if (tables[m.tableNum]) tables[m.tableNum].push(m); });
+
+        for (let t = 1; t <= TOTAL_TABLES; t++) {
+          const seats = tables[t];
+          const isFull = seats.length === SEATS_PER_TABLE;
+          let rows = "";
+          for (let s = 1; s <= SEATS_PER_TABLE; s++) {
+            const m = seats.find(x => x.seatInTable === s);
+            if (m) {
+              const ji = JOB_INFO[m.job] || { color: "#fff", icon: "👤" };
+              rows += `<div class="board-seat filled ${m.bonus ? 'bonus-seat' : ''}">
+                <span class="bs-icon">${ji.icon}</span>
+                <span class="bs-name">${m.name}${m.bonus ? ' <span class="bs-bonus-badge">👑 메뉴선택</span>' : ''}</span>
+                <span class="bs-tags">
+                  <span style="color:${ji.color}">${m.job}</span>
+                  <span>${m.drink === "음주" ? "🍺" : "🧃"}</span>
+                </span>
+              </div>`;
+            } else {
+              rows += `<div class="board-seat empty">EMPTY</div>`;
+            }
+          }
+          container.innerHTML += `
+            <div class="board-table ${isFull ? "full" : ""}">
+              <div class="bt-header">
+                <span>TABLE ${t}</span>
+                <span class="bt-count">${seats.length}/${SEATS_PER_TABLE}${isFull ? " ✓" : ""}</span>
+              </div>
+              ${rows}
+            </div>`;
+        }
+      }
     });
 
-    // ===== 룰렛 애니메이션 =====
-    // finalTable: 실제 배정된 테이블 번호 (이 숫자로 멈춤)
-    function startRoulette(finalTable, callback) {
-      const display = document.getElementById("roulette-display");
-      const tableNums = Array.from({ length: 7 }, (_, i) => i + 1);
-      let count = 0;
-      const maxCount = 40;
-      let speed = 60;
+    // ===== 화면 전환 =====
+    function showPhase(phase) {
+      ["form","matching","result"].forEach(p => {
+        document.getElementById("phase-" + p).classList.toggle("hidden", p !== phase);
+      });
+    }
 
-      function tick() {
-        // 마지막 틱에서는 실제 배정 번호로 고정
-        const isLast = count === maxCount - 1;
-        const num = isLast
-          ? finalTable
-          : tableNums[Math.floor(Math.random() * tableNums.length)];
+    // ===== 파티클 배경 =====
+    function initParticles() {
+      const canvas = document.getElementById("bgCanvas");
+      const ctx = canvas.getContext("2d");
+      function resize() { canvas.width = window.innerWidth; canvas.height = window.innerHeight; }
+      resize();
+      window.addEventListener("resize", resize);
 
-        display.textContent = num + "번 테이블";
-        count++;
+      const pts = Array.from({ length: 60 }, () => ({
+        x: Math.random() * canvas.width,
+        y: Math.random() * canvas.height,
+        r: Math.random() * 1.5 + 0.3,
+        vx: (Math.random() - 0.5) * 0.3,
+        vy: (Math.random() - 0.5) * 0.3,
+        a: Math.random()
+      }));
 
-        // 점점 느려짐
-        if (count > maxCount * 0.6) speed = 120;
-        if (count > maxCount * 0.8) speed = 220;
-        if (count > maxCount * 0.9) speed = 400;
-
-        if (count < maxCount) {
-          setTimeout(tick, speed);
-        } else {
-          display.classList.add("final");
-          setTimeout(callback, 600);
-        }
+      function draw() {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        pts.forEach(p => {
+          p.x += p.vx; p.y += p.vy;
+          if (p.x < 0) p.x = canvas.width;
+          if (p.x > canvas.width) p.x = 0;
+          if (p.y < 0) p.y = canvas.height;
+          if (p.y > canvas.height) p.y = 0;
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+          ctx.fillStyle = `rgba(200,155,60,${p.a * 0.6})`;
+          ctx.fill();
+        });
+        requestAnimationFrame(draw);
       }
-      tick();
+      draw();
     }
 
     // ===== 컨페티 =====
-    function launchConfetti(color) {
-      const canvas = document.getElementById("confetti-canvas");
+    function launchConfetti(accentColor) {
+      const canvas = document.getElementById("confettiCanvas");
       const ctx = canvas.getContext("2d");
       canvas.width = window.innerWidth;
       canvas.height = window.innerHeight;
       canvas.style.display = "block";
-
-      const particles = Array.from({ length: 120 }, () => ({
+      const colors = [accentColor, "#c89b3c", "#ffffff", "#ffd700", "#ff6b9d"];
+      const particles = Array.from({ length: 150 }, () => ({
         x: Math.random() * canvas.width,
-        y: Math.random() * canvas.height - canvas.height,
-        r: Math.random() * 8 + 3,
-        color: [color, "#ffffff", "#ffd700", "#ff6b6b"][Math.floor(Math.random() * 4)],
-        speed: Math.random() * 4 + 2,
+        y: -10,
+        r: Math.random() * 7 + 2,
+        color: colors[Math.floor(Math.random() * colors.length)],
+        speed: Math.random() * 5 + 2,
         angle: Math.random() * Math.PI * 2,
-        spin: (Math.random() - 0.5) * 0.2,
+        spin: (Math.random() - 0.5) * 0.15,
+        wobble: Math.random() * 3
       }));
-
       let frame = 0;
       function draw() {
         ctx.clearRect(0, 0, canvas.width, canvas.height);
         particles.forEach(p => {
           p.y += p.speed;
           p.angle += p.spin;
+          p.x += Math.sin(frame * 0.05 + p.wobble) * 0.5;
           ctx.save();
           ctx.translate(p.x, p.y);
           ctx.rotate(p.angle);
           ctx.fillStyle = p.color;
-          ctx.fillRect(-p.r / 2, -p.r / 2, p.r, p.r * 1.5);
+          ctx.fillRect(-p.r / 2, -p.r / 2, p.r, p.r * 1.8);
           ctx.restore();
         });
         frame++;
-        if (frame < 180) requestAnimationFrame(draw);
-        else canvas.style.display = "none";
+        if (frame < 200) requestAnimationFrame(draw);
+        else { canvas.style.display = "none"; }
       }
       draw();
     }
 
-    // ===== 흔들기 효과 =====
-    function shakeElement(el) {
+    // ===== 오디오 =====
+    function playBGM() {
+      try { document.getElementById("bgm").play(); } catch(e) {}
+    }
+    function playDrum() {
+      try { document.getElementById("drum").play(); } catch(e) {}
+    }
+
+    // ===== 유틸 =====
+    function shake(el) {
       el.classList.add("shake");
       setTimeout(() => el.classList.remove("shake"), 500);
+    }
+    function showToast(msg) {
+      const t = document.getElementById("toast");
+      t.textContent = msg;
+      t.classList.add("show");
+      setTimeout(() => t.classList.remove("show"), 3000);
     }
   </script>
 
   <style>
-    @import url('https://fonts.googleapis.com/css2?family=Jua&family=Nanum+Gothic:wght@400;700&display=swap');
+    :root {
+      --gold: #c89b3c;
+      --gold-light: #f0e6c8;
+      --gold-dim: #8a6a20;
+      --bg: #010a13;
+      --surface: #0a0f1a;
+      --surface2: #0d1520;
+      --border: #1e2d3d;
+      --border-gold: #3a2a0a;
+      --text: #c8aa6e;
+      --text-dim: #5b5a56;
+      --red: #c33;
+    }
 
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
-    :root {
-      --bg: #07070f;
-      --surface: #0f0f1e;
-      --border: #2a2a4a;
-      --text: #e8e8f0;
-      --muted: #888;
-      --gold: #ffd700;
-      --accent: #7c5cbf;
-    }
-
-    body {
+    html, body {
       min-height: 100vh;
       background: var(--bg);
       color: var(--text);
       font-family: 'Nanum Gothic', sans-serif;
+      overflow-x: hidden;
+    }
+
+    /* 배경 캔버스 */
+    #bgCanvas {
+      position: fixed; inset: 0; z-index: 0; pointer-events: none;
+    }
+    #confettiCanvas {
+      position: fixed; inset: 0; z-index: 999; pointer-events: none; display: none;
+    }
+
+    .app {
+      position: relative; z-index: 1;
+      max-width: 900px;
+      margin: 0 auto;
+      padding: 20px 16px 60px;
+    }
+
+    /* ===== 헤더 ===== */
+    .site-header {
+      text-align: center;
+      padding: 32px 0 24px;
+      border-bottom: 1px solid var(--border-gold);
+      margin-bottom: 28px;
+    }
+    .site-logo {
+      font-family: 'Cinzel Decorative', cursive;
+      font-size: clamp(18px, 4vw, 30px);
+      color: var(--gold);
+      letter-spacing: 3px;
+      text-shadow: 0 0 30px #c89b3c55;
+      line-height: 1.3;
+    }
+    .site-sub {
+      font-family: 'Rajdhani', sans-serif;
+      font-size: 13px;
+      letter-spacing: 4px;
+      color: var(--text-dim);
+      margin-top: 6px;
+      text-transform: uppercase;
+    }
+    .header-bar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-top: 16px;
+    }
+    .player-count {
+      font-family: 'Rajdhani', sans-serif;
+      font-size: 14px;
+      letter-spacing: 2px;
+      color: var(--gold-dim);
+    }
+    .player-count span { color: var(--gold); font-weight: 700; }
+
+    /* ===== 공통 버튼 ===== */
+    .btn-gold {
+      background: linear-gradient(135deg, #8a6a20, #c89b3c, #8a6a20);
+      border: none;
+      color: #000;
+      font-family: 'Rajdhani', sans-serif;
+      font-weight: 700;
+      font-size: 15px;
+      letter-spacing: 2px;
+      padding: 13px 24px;
+      border-radius: 4px;
+      cursor: pointer;
+      transition: all 0.2s;
+      text-transform: uppercase;
+      position: relative;
+      overflow: hidden;
+    }
+    .btn-gold::after {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background: linear-gradient(135deg, transparent 40%, rgba(255,255,255,0.15) 50%, transparent 60%);
+      transform: translateX(-100%);
+      transition: transform 0.4s;
+    }
+    .btn-gold:hover::after { transform: translateX(100%); }
+    .btn-gold:active { transform: scale(0.97); }
+
+    .btn-ghost {
+      background: transparent;
+      border: 1px solid var(--border);
+      color: var(--text-dim);
+      font-family: 'Rajdhani', sans-serif;
+      font-size: 13px;
+      letter-spacing: 1px;
+      padding: 9px 18px;
+      border-radius: 4px;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .btn-ghost:hover { border-color: var(--gold-dim); color: var(--gold-dim); }
+
+    .btn-reset {
+      background: transparent;
+      border: 1px solid var(--red);
+      color: var(--red);
+      font-family: 'Rajdhani', sans-serif;
+      font-size: 11px;
+      letter-spacing: 1px;
+      padding: 6px 12px;
+      border-radius: 3px;
+      cursor: pointer;
+      opacity: 0.5;
+      transition: opacity 0.2s;
+    }
+    .btn-reset:hover { opacity: 1; }
+
+    .hidden { display: none !important; }
+
+    /* ===== 카드 ===== */
+    .lol-card {
+      background: var(--surface);
+      border: 1px solid var(--border-gold);
+      border-radius: 6px;
+      padding: 28px 24px;
+      position: relative;
+      overflow: hidden;
+    }
+    .lol-card::before {
+      content: '';
+      position: absolute;
+      top: 0; left: 0; right: 0;
+      height: 2px;
+      background: linear-gradient(90deg, transparent, var(--gold), transparent);
+    }
+    .card-title {
+      font-family: 'Rajdhani', sans-serif;
+      font-size: 11px;
+      letter-spacing: 4px;
+      color: var(--text-dim);
+      text-transform: uppercase;
+      margin-bottom: 20px;
+    }
+
+    /* ===== FORM 화면 ===== */
+    #phase-form { animation: fadeUp 0.4s ease; }
+
+    .form-grid { display: flex; flex-direction: column; gap: 16px; }
+
+    .form-field label {
+      display: block;
+      font-family: 'Rajdhani', sans-serif;
+      font-size: 11px;
+      letter-spacing: 3px;
+      color: var(--text-dim);
+      text-transform: uppercase;
+      margin-bottom: 8px;
+    }
+
+    .lol-input, .lol-select {
+      width: 100%;
+      background: #06090f;
+      border: 1px solid var(--border);
+      border-bottom: 1px solid var(--gold-dim);
+      border-radius: 3px;
+      color: var(--text);
+      font-family: 'Nanum Gothic', sans-serif;
+      font-size: 15px;
+      padding: 12px 14px;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+    .lol-input:focus, .lol-select:focus { border-color: var(--gold); }
+    .lol-select option { background: #0a0f1a; }
+
+    .drink-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .drink-btn {
+      background: #06090f;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      color: var(--text-dim);
+      font-family: 'Rajdhani', sans-serif;
+      font-size: 15px;
+      font-weight: 600;
+      padding: 14px 10px;
+      cursor: pointer;
+      transition: all 0.2s;
+      text-align: center;
+    }
+    .drink-btn.active {
+      border-color: var(--gold);
+      color: var(--gold);
+      background: #1a1200;
+      box-shadow: inset 0 0 12px #c89b3c18;
+    }
+
+    .join-row {
+      display: flex;
+      gap: 12px;
+      align-items: center;
+      margin-top: 8px;
+    }
+    .join-row .btn-gold { flex: 1; padding: 16px; font-size: 16px; }
+
+    /* ===== MATCHING 화면 ===== */
+    #phase-matching {
+      text-align: center;
+      padding: 40px 0;
+      animation: fadeUp 0.3s ease;
+    }
+    .matching-label {
+      font-family: 'Rajdhani', sans-serif;
+      font-size: 12px;
+      letter-spacing: 5px;
+      color: var(--text-dim);
+      text-transform: uppercase;
+      margin-bottom: 8px;
+    }
+    .matching-title {
+      font-family: 'Cinzel Decorative', cursive;
+      font-size: clamp(16px, 3vw, 22px);
+      color: var(--gold);
+      margin-bottom: 40px;
+    }
+
+    .roulette-frame {
+      width: 240px;
+      height: 240px;
+      margin: 0 auto 32px;
+      position: relative;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .roulette-ring {
+      position: absolute;
+      inset: 0;
+      border-radius: 50%;
+      border: 2px solid var(--gold-dim);
+      animation: rotateSlow 8s linear infinite;
+    }
+    .roulette-ring::before {
+      content: '';
+      position: absolute;
+      top: -3px; left: 50%;
+      transform: translateX(-50%);
+      width: 8px; height: 8px;
+      background: var(--gold);
+      border-radius: 50%;
+      box-shadow: 0 0 10px var(--gold);
+    }
+    @keyframes rotateSlow { to { transform: rotate(360deg); } }
+
+    .roulette-inner {
+      width: 180px; height: 180px;
+      background: radial-gradient(circle, #0d1520 60%, #1a1200 100%);
+      border: 1px solid var(--border-gold);
+      border-radius: 50%;
       display: flex;
       flex-direction: column;
       align-items: center;
       justify-content: center;
-      overflow-x: hidden;
+      box-shadow: 0 0 30px #c89b3c22, inset 0 0 20px #00000088;
     }
-
-    body::before {
-      content: '';
-      position: fixed;
-      inset: 0;
-      background: radial-gradient(ellipse at 20% 20%, #1a0a3a55 0%, transparent 60%),
-                  radial-gradient(ellipse at 80% 80%, #0a1a3a55 0%, transparent 60%);
-      pointer-events: none;
+    .roulette-table-label {
+      font-family: 'Rajdhani', sans-serif;
+      font-size: 10px;
+      letter-spacing: 3px;
+      color: var(--text-dim);
+      text-transform: uppercase;
     }
-
-    .hidden { display: none !important; }
-
-    /* ===== 컨페티 캔버스 ===== */
-    #confetti-canvas {
-      position: fixed;
-      inset: 0;
-      pointer-events: none;
-      z-index: 999;
-      display: none;
-    }
-
-    /* ===== 공통 화면 ===== */
-    .screen {
-      width: 100%;
-      max-width: 480px;
-      padding: 24px 20px;
-      animation: fadeUp 0.4s ease;
-    }
-
-    @keyframes fadeUp {
-      from { opacity: 0; transform: translateY(20px); }
-      to   { opacity: 1; transform: translateY(0); }
-    }
-
-    /* ===== 헤더 ===== */
-    .app-header {
-      text-align: center;
-      margin-bottom: 32px;
-    }
-    .app-header .big-emoji {
-      font-size: 56px;
-      display: block;
-      margin-bottom: 8px;
-      animation: bounce 2s infinite;
-    }
-    @keyframes bounce {
-      0%, 100% { transform: translateY(0); }
-      50% { transform: translateY(-8px); }
-    }
-    .app-title {
-      font-family: 'Jua', sans-serif;
-      font-size: 28px;
-      background: linear-gradient(90deg, #ffd700, #ce93d8, #4fc3f7);
-      -webkit-background-clip: text;
-      -webkit-text-fill-color: transparent;
-      background-clip: text;
-    }
-    .app-sub {
-      color: var(--muted);
-      font-size: 14px;
-      margin-top: 6px;
-    }
-
-    /* ===== 카드 ===== */
-    .card {
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: 20px;
-      padding: 28px 24px;
-    }
-
-    /* ===== 버튼 ===== */
-    .btn {
-      display: block;
-      width: 100%;
-      padding: 16px;
-      border: none;
-      border-radius: 12px;
-      font-family: 'Jua', sans-serif;
-      font-size: 18px;
-      cursor: pointer;
-      transition: transform 0.15s, box-shadow 0.15s;
-    }
-    .btn:active { transform: scale(0.97); }
-    .btn-primary {
-      background: linear-gradient(135deg, #7c5cbf, #4fc3f7);
-      color: #fff;
-      box-shadow: 0 4px 20px #7c5cbf55;
-    }
-    .btn-primary:hover { box-shadow: 0 6px 28px #7c5cbf88; }
-    .btn-secondary {
-      background: transparent;
-      border: 1px solid var(--border);
-      color: var(--muted);
-      font-size: 14px;
-      margin-top: 12px;
-    }
-    .btn-ghost {
-      background: transparent;
-      color: var(--muted);
-      font-size: 13px;
-      margin-top: 8px;
-      text-decoration: underline;
-      cursor: pointer;
-      border: none;
-      display: block;
-      text-align: center;
-    }
-
-    /* ===== 인트로 ===== */
-    .info-grid {
-      display: grid;
-      grid-template-columns: 1fr 1fr 1fr;
-      gap: 12px;
-      margin: 20px 0 28px;
-    }
-    .info-item {
-      background: #ffffff08;
-      border-radius: 12px;
-      padding: 14px 8px;
-      text-align: center;
-    }
-    .info-item .num {
-      font-family: 'Jua', sans-serif;
-      font-size: 26px;
+    #rouletteNum {
+      font-family: 'Cinzel Decorative', cursive;
+      font-size: 64px;
       color: var(--gold);
-    }
-    .info-item .label {
-      font-size: 11px;
-      color: var(--muted);
-      margin-top: 4px;
-    }
-    .role-badges {
-      display: flex;
-      gap: 8px;
-      justify-content: center;
-      flex-wrap: wrap;
-      margin-top: 16px;
-    }
-    .role-badge {
-      padding: 6px 14px;
-      border-radius: 20px;
-      font-size: 13px;
-      border: 1px solid;
-    }
-
-    /* ===== 폼 ===== */
-    .form-group { margin-bottom: 20px; }
-    .form-label {
-      display: block;
-      font-size: 13px;
-      color: var(--muted);
-      margin-bottom: 8px;
-    }
-    .form-input, .form-select {
-      width: 100%;
-      padding: 14px 16px;
-      background: #ffffff0a;
-      border: 1px solid var(--border);
-      border-radius: 12px;
-      color: var(--text);
-      font-size: 16px;
-      font-family: 'Nanum Gothic', sans-serif;
-      outline: none;
-      transition: border-color 0.2s;
-    }
-    .form-input:focus, .form-select:focus {
-      border-color: var(--accent);
-    }
-    .form-select option { background: #1a1a2e; }
-
-    @keyframes shake {
-      0%, 100% { transform: translateX(0); }
-      20%, 60% { transform: translateX(-6px); }
-      40%, 80% { transform: translateX(6px); }
-    }
-    .shake { animation: shake 0.4s ease; border-color: #ff5555 !important; }
-
-    /* ===== 룰렛 ===== */
-    .roulette-wrap {
-      text-align: center;
-      padding: 40px 0;
-    }
-    .roulette-label {
-      font-size: 18px;
-      color: var(--muted);
-      margin-bottom: 8px;
-    }
-    #roulette-name {
-      font-family: 'Jua', sans-serif;
-      font-size: 22px;
-      color: var(--gold);
-    }
-    .roulette-subtitle {
-      font-size: 14px;
-      color: var(--muted);
-      margin-bottom: 32px;
-    }
-    .roulette-box {
-      background: linear-gradient(135deg, #1a1a3a, #0a0a1a);
-      border: 2px solid var(--accent);
-      border-radius: 20px;
-      padding: 36px 20px;
-      margin: 0 auto;
-      box-shadow: 0 0 40px #7c5cbf44, inset 0 0 20px #7c5cbf11;
-      position: relative;
-      overflow: hidden;
-    }
-    .roulette-box::before {
-      content: '';
-      position: absolute;
-      inset: 0;
-      background: repeating-linear-gradient(
-        90deg,
-        transparent,
-        transparent 20px,
-        #7c5cbf08 20px,
-        #7c5cbf08 21px
-      );
-    }
-    #roulette-display {
-      font-family: 'Jua', sans-serif;
-      font-size: 42px;
-      color: #fff;
-      position: relative;
+      line-height: 1;
+      text-shadow: 0 0 20px #c89b3c88;
       transition: color 0.1s;
     }
-    #roulette-display.final {
-      color: var(--gold);
-      text-shadow: 0 0 20px var(--gold);
-      animation: finalPulse 0.6s ease;
+    #rouletteNum.locked {
+      color: #fff;
+      text-shadow: 0 0 40px #ffffff99;
+      animation: lockedPulse 0.8s ease;
     }
-    @keyframes finalPulse {
+    @keyframes lockedPulse {
       0% { transform: scale(1); }
-      50% { transform: scale(1.15); }
+      40% { transform: scale(1.3); }
       100% { transform: scale(1); }
     }
-    .roulette-hint {
-      margin-top: 24px;
-      font-size: 13px;
-      color: var(--muted);
-      animation: blink 1.2s infinite;
+
+    .scanning-bar {
+      width: 200px;
+      height: 2px;
+      background: var(--border);
+      border-radius: 2px;
+      overflow: hidden;
+      margin: 0 auto;
     }
-    @keyframes blink {
-      0%, 100% { opacity: 1; }
-      50% { opacity: 0.3; }
+    .scanning-bar-fill {
+      height: 100%;
+      background: linear-gradient(90deg, transparent, var(--gold), transparent);
+      animation: scanAnim 1.2s ease-in-out infinite;
+    }
+    @keyframes scanAnim {
+      0% { transform: translateX(-100%); }
+      100% { transform: translateX(300%); }
     }
 
-    /* ===== 결과 ===== */
-    #result-card {
-      border-radius: 24px;
-      padding: 36px 28px;
-      text-align: center;
-      border: 1px solid #ffffff20;
-    }
-    #result-emoji {
-      font-size: 64px;
-      display: block;
-      margin-bottom: 16px;
-      animation: popIn 0.5s cubic-bezier(0.175,0.885,0.32,1.275);
-    }
-    @keyframes popIn {
-      from { transform: scale(0); opacity: 0; }
-      to   { transform: scale(1); opacity: 1; }
-    }
-    #result-name {
-      font-family: 'Jua', sans-serif;
-      font-size: 24px;
-      color: #fff;
-    }
-    #result-role {
-      font-size: 14px;
-      color: #ffffff88;
-      margin-top: 4px;
-    }
-    .result-divider {
-      border: none;
-      border-top: 1px solid #ffffff20;
-      margin: 24px 0;
-    }
-    #result-accent {
-      font-size: 15px;
-      margin-bottom: 8px;
-    }
-    #result-table {
-      font-family: 'Jua', sans-serif;
-      font-size: 52px;
-      display: block;
-      margin: 8px 0;
-    }
-    #result-seat {
+    .matching-hint {
+      font-family: 'Rajdhani', sans-serif;
       font-size: 13px;
-      color: #ffffff55;
+      letter-spacing: 2px;
+      color: var(--text-dim);
+      animation: blink 1.4s infinite;
+      margin-top: 16px;
     }
+    @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.2} }
 
-    /* ===== 보드 ===== */
-    #screen-board {
-      max-width: 640px;
-      padding: 24px 16px;
-    }
-    .board-header {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      margin-bottom: 20px;
-      flex-wrap: wrap;
-      gap: 10px;
-    }
-    .board-title {
-      font-family: 'Jua', sans-serif;
-      font-size: 20px;
-    }
-    #board-stats {
-      font-size: 13px;
-      color: var(--muted);
-    }
-    #tables-board {
+    /* ===== RESULT 화면 ===== */
+    #phase-result { animation: fadeUp 0.4s ease; }
+
+    .result-layout {
       display: grid;
       grid-template-columns: 1fr 1fr;
-      gap: 14px;
+      gap: 20px;
+      align-items: start;
     }
-    @media (max-width: 480px) {
-      #tables-board { grid-template-columns: 1fr; }
+    @media (max-width: 560px) { .result-layout { grid-template-columns: 1fr; } }
+
+    .result-table-display {
+      text-align: center;
+      padding: 32px 20px;
+      background: radial-gradient(circle at center, #1a1200 0%, #06090f 70%);
+      border: 1px solid var(--gold-dim);
+      border-radius: 6px;
     }
-    .table-card {
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: 16px;
-      padding: 16px;
-    }
-    .table-title {
-      font-family: 'Jua', sans-serif;
-      font-size: 15px;
-      display: flex;
-      justify-content: space-between;
+    .rtd-label {
+      font-family: 'Rajdhani', sans-serif;
+      font-size: 10px;
+      letter-spacing: 5px;
+      color: var(--text-dim);
+      text-transform: uppercase;
       margin-bottom: 12px;
     }
-    .seat-count {
-      font-size: 12px;
-      color: var(--muted);
-      font-family: 'Nanum Gothic', sans-serif;
-    }
-    .seat-slot {
-      border-radius: 10px;
-      padding: 10px 12px;
-      margin-bottom: 8px;
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      font-size: 14px;
-      border: 1px solid transparent;
-      background: #ffffff05;
-    }
-    .seat-slot.filled { border-width: 1px; }
-    .seat-slot.empty {
-      border: 1px dashed #333;
-      opacity: 0.4;
-    }
-    .seat-emoji { font-size: 18px; }
-    .seat-name { font-weight: 700; flex: 1; }
-    .seat-role { font-size: 11px; }
-    .seat-empty-text { color: #555; font-size: 12px; }
-
-    .btn-back {
-      background: none;
-      border: 1px solid var(--border);
-      color: var(--muted);
+    .rtd-match {
+      font-family: 'Rajdhani', sans-serif;
       font-size: 13px;
-      padding: 7px 14px;
-      border-radius: 8px;
-      cursor: pointer;
-      font-family: 'Nanum Gothic', sans-serif;
-      transition: color 0.2s, border-color 0.2s;
+      letter-spacing: 4px;
+      color: var(--gold-dim);
+      text-transform: uppercase;
+      margin-bottom: 4px;
     }
-    .btn-back:hover { color: var(--text); border-color: #555; }
+    #resultTable {
+      font-family: 'Cinzel Decorative', cursive;
+      font-size: 80px;
+      color: var(--gold);
+      line-height: 1;
+      text-shadow: 0 0 40px #c89b3c66;
+      display: block;
+      animation: popIn 0.5s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+    }
+    @keyframes popIn {
+      from { transform: scale(0.3); opacity: 0; }
+      to { transform: scale(1); opacity: 1; }
+    }
 
-    /* ===== 음주 토글 ===== */
-    .drink-toggle {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 10px;
+    .result-info {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
     }
-    .drink-btn {
-      padding: 14px 10px;
-      background: #ffffff0a;
+    .ri-row {
+      background: #06090f;
       border: 1px solid var(--border);
-      border-radius: 12px;
-      color: var(--muted);
-      font-size: 15px;
-      font-family: 'Nanum Gothic', sans-serif;
-      cursor: pointer;
-      transition: all 0.2s;
+      border-left: 3px solid var(--gold-dim);
+      border-radius: 4px;
+      padding: 12px 16px;
     }
-    .drink-btn.selected-yes {
-      background: #1a3a1a;
-      border-color: #ffd700;
-      color: #ffd700;
+    .ri-label {
+      font-family: 'Rajdhani', sans-serif;
+      font-size: 10px;
+      letter-spacing: 3px;
+      color: var(--text-dim);
+      text-transform: uppercase;
+      margin-bottom: 4px;
     }
-    .drink-btn.selected-no {
-      background: #1a2a3a;
-      border-color: #4fc3f7;
-      color: #4fc3f7;
+    .ri-value {
+      font-size: 17px;
+      font-weight: 700;
+      color: var(--gold-light);
     }
 
-    /* ===== 관리자 ===== */
-    .admin-row {
+    /* 보너스 */
+    #bonusAnnounce {
+      margin-top: 20px;
+      background: linear-gradient(135deg, #1a1000, #2a1800, #1a1000);
+      border: 2px solid var(--gold);
+      border-radius: 6px;
+      padding: 28px 20px;
       text-align: center;
+      animation: fadeUp 0.5s 0.3s both;
+      position: relative;
+      overflow: hidden;
+      box-shadow: 0 0 40px #c89b3c33, inset 0 0 30px #c89b3c11;
+    }
+    #bonusAnnounce::before {
+      content: '';
+      position: absolute;
+      top: -50%; left: -50%;
+      width: 200%; height: 200%;
+      background: conic-gradient(transparent 0deg, #c89b3c08 60deg, transparent 120deg);
+      animation: rotateSlow 6s linear infinite;
+    }
+    .bonus-sparkle {
+      position: relative;
+      margin-bottom: 12px;
+    }
+    .bonus-crown-anim {
+      font-size: 48px;
+      display: inline-block;
+      animation: crownBounce 1.5s ease-in-out infinite;
+      filter: drop-shadow(0 0 12px #ffd700);
+    }
+    @keyframes crownBounce {
+      0%, 100% { transform: translateY(0) rotate(-5deg); }
+      50% { transform: translateY(-8px) rotate(5deg); }
+    }
+    .bonus-title {
+      font-family: 'Rajdhani', sans-serif;
+      font-size: 11px;
+      letter-spacing: 5px;
+      color: var(--gold-dim);
+      text-transform: uppercase;
+      margin-bottom: 14px;
+      position: relative;
+    }
+    .bonus-winner {
+      font-family: 'Cinzel Decorative', cursive;
+      font-size: 22px;
+      color: var(--gold);
+      text-shadow: 0 0 20px #c89b3c99;
+      position: relative;
+    }
+    .bonus-desc {
+      font-size: 13px;
+      color: var(--text-dim);
+      margin-top: 10px;
+      position: relative;
+    }
+    .bonus-sub {
+      font-family: 'Rajdhani', sans-serif;
+      font-size: 11px;
+      letter-spacing: 2px;
+      color: var(--gold-dim);
+      margin-top: 8px;
+      opacity: 0.7;
+      position: relative;
+    }
+
+    .result-actions {
+      display: flex;
+      gap: 10px;
       margin-top: 20px;
     }
-    .btn-admin {
-      background: none;
-      border: none;
-      color: #333;
-      font-size: 11px;
-      cursor: pointer;
+    .result-actions .btn-gold { flex: 1; }
+
+    /* ===== 보드 오버레이 ===== */
+    #boardOverlay {
+      position: fixed;
+      inset: 0;
+      z-index: 100;
+      background: rgba(1,10,19,0.96);
+      overflow-y: auto;
+      padding: 24px 16px;
+      animation: fadeIn 0.25s ease;
     }
-    .btn-admin:hover { color: #666; }
+    @keyframes fadeIn { from{opacity:0} to{opacity:1} }
+
+    .board-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      max-width: 860px;
+      margin: 0 auto 20px;
+    }
+    .board-header-title {
+      font-family: 'Cinzel Decorative', cursive;
+      font-size: 16px;
+      color: var(--gold);
+      letter-spacing: 2px;
+    }
+    .board-total {
+      font-family: 'Rajdhani', sans-serif;
+      font-size: 13px;
+      letter-spacing: 2px;
+      color: var(--text-dim);
+    }
+    .board-total span { color: var(--gold); }
+
+    #tablesGrid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+      gap: 16px;
+      max-width: 860px;
+      margin: 0 auto;
+    }
+
+    .board-table {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      overflow: hidden;
+      transition: border-color 0.3s;
+    }
+    .board-table.full { border-color: var(--gold-dim); }
+
+    .bt-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 10px 14px;
+      background: #0d1520;
+      border-bottom: 1px solid var(--border);
+      font-family: 'Rajdhani', sans-serif;
+      font-size: 13px;
+      letter-spacing: 2px;
+      color: var(--gold-dim);
+      text-transform: uppercase;
+    }
+    .bt-count { font-size: 11px; color: var(--text-dim); }
+    .board-table.full .bt-header { color: var(--gold); }
+
+    .board-seat {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 9px 14px;
+      border-bottom: 1px solid #0d1218;
+      font-size: 13px;
+    }
+    .board-seat:last-child { border-bottom: none; }
+    .board-seat.empty { color: var(--text-dim); font-family: 'Rajdhani', sans-serif; font-size: 11px; letter-spacing: 2px; }
+    .bs-icon { font-size: 15px; }
+    .bs-name { flex: 1; font-weight: 700; color: var(--gold-light); }
+    .bs-tags { display: flex; gap: 5px; align-items: center; font-size: 12px; }
+    .bs-star { color: #ffd700; }
+
+    .bonus-seat {
+      background: linear-gradient(90deg, #1a1200, #2a1e00, #1a1200) !important;
+      border-left: 3px solid var(--gold) !important;
+      animation: bonusGlow 2s ease-in-out infinite;
+      position: relative;
+    }
+    @keyframes bonusGlow {
+      0%, 100% { box-shadow: inset 0 0 8px #c89b3c22; }
+      50% { box-shadow: inset 0 0 18px #c89b3c55, 0 0 12px #c89b3c33; }
+    }
+    .bs-bonus-badge {
+      display: inline-block;
+      font-size: 10px;
+      font-family: 'Rajdhani', sans-serif;
+      font-weight: 700;
+      letter-spacing: 1px;
+      color: #000;
+      background: linear-gradient(90deg, #c89b3c, #f0d060);
+      padding: 2px 7px;
+      border-radius: 3px;
+      margin-left: 6px;
+      vertical-align: middle;
+      white-space: nowrap;
+    }
+
+    /* ===== 토스트 ===== */
+    #toast {
+      position: fixed;
+      bottom: 24px;
+      left: 50%;
+      transform: translateX(-50%) translateY(20px);
+      background: #1a0a0a;
+      border: 1px solid var(--red);
+      color: #ff8888;
+      font-family: 'Rajdhani', sans-serif;
+      font-size: 14px;
+      letter-spacing: 1px;
+      padding: 12px 24px;
+      border-radius: 4px;
+      opacity: 0;
+      transition: all 0.3s;
+      z-index: 9999;
+      white-space: nowrap;
+    }
+    #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+    /* ===== 애니메이션 ===== */
+    @keyframes fadeUp {
+      from { opacity: 0; transform: translateY(16px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    @keyframes shake {
+      0%,100%{transform:translateX(0)}
+      20%,60%{transform:translateX(-6px)}
+      40%,80%{transform:translateX(6px)}
+    }
+    .shake { animation: shake 0.4s ease; }
+
+    /* 구분선 */
+    .divider {
+      border: none;
+      border-top: 1px solid var(--border-gold);
+      margin: 24px 0;
+    }
   </style>
 </head>
 <body>
-  <canvas id="confetti-canvas"></canvas>
+  <canvas id="bgCanvas"></canvas>
+  <canvas id="confettiCanvas"></canvas>
+  <div id="toast"></div>
 
-  <!-- ===== 인트로 ===== -->
-  <div id="screen-intro" class="screen hidden">
-    <div class="app-header">
-      <span class="big-emoji">🍻</span>
-      <div class="app-title">회식 자리 뽑기</div>
-      <div class="app-sub">랜덤 배정으로 새로운 인연을 만들어보세요!</div>
-    </div>
+  <audio id="bgm" loop><source src="bgm.mp3" type="audio/mpeg"/></audio>
+  <audio id="drum"><source src="drumroll.mp3" type="audio/mpeg"/></audio>
 
-    <div class="card">
-      <div class="info-grid">
-        <div class="info-item">
-          <div class="num">28</div>
-          <div class="label">총 인원</div>
+  <div class="app">
+
+    <!-- 헤더 -->
+    <header class="site-header">
+      <div class="site-logo">🍻 TEAM DINNER<br>MATCHMAKING</div>
+      <div class="site-sub">Season 2025 · Table Assignment</div>
+      <div class="header-bar">
+        <div class="player-count"><span id="totalCount">0</span> / 28 PLAYERS</div>
+        <button class="btn-reset" id="resetBtn">⚙ ADMIN RESET</button>
+      </div>
+    </header>
+
+    <!-- PHASE: FORM -->
+    <div id="phase-form">
+      <div class="lol-card">
+        <div class="card-title">▸ Player Registration</div>
+        <div class="form-grid">
+
+          <div class="form-field">
+            <label>Name</label>
+            <input class="lol-input" id="nameInput" placeholder="이름 입력" maxlength="10"/>
+          </div>
+
+          <div class="form-field">
+            <label>Role</label>
+            <select class="lol-select" id="jobSelect">
+              <option value="개발">💻 개발</option>
+              <option value="아트">🎨 아트</option>
+              <option value="기획">📋 기획</option>
+            </select>
+          </div>
+
+          <div class="form-field">
+            <label>Drink Preference</label>
+            <div class="drink-row">
+              <button class="drink-btn" id="drinkYes">🍺 음주</button>
+              <button class="drink-btn" id="drinkNo">🧃 비음주</button>
+            </div>
+          </div>
+
+          <div class="join-row">
+            <button class="btn-gold" id="joinBtn">⚔ FIND MY TABLE</button>
+            <button class="btn-ghost" id="viewBoardBtn">📋 전체 보기</button>
+          </div>
+
         </div>
-        <div class="info-item">
-          <div class="num">7</div>
-          <div class="label">테이블</div>
+      </div>
+    </div>
+
+    <!-- PHASE: MATCHING -->
+    <div id="phase-matching" class="hidden">
+      <div class="matching-label">Searching for table...</div>
+      <div class="matching-title">MATCHMAKING</div>
+
+      <div class="roulette-frame">
+        <div class="roulette-ring"></div>
+        <div class="roulette-inner">
+          <div class="roulette-table-label">TABLE</div>
+          <div id="rouletteNum">?</div>
         </div>
-        <div class="info-item">
-          <div class="num">4</div>
-          <div class="label">인석</div>
+      </div>
+
+      <div class="scanning-bar"><div class="scanning-bar-fill"></div></div>
+      <div class="matching-hint">ANALYZING TEAM COMPOSITION...</div>
+    </div>
+
+    <!-- PHASE: RESULT -->
+    <div id="phase-result" class="hidden">
+      <div class="lol-card">
+        <div class="card-title">▸ Match Found</div>
+
+        <div class="result-layout">
+          <div class="result-table-display">
+            <div class="rtd-label">Your Table</div>
+            <div class="rtd-match">MATCH FOUND</div>
+            <span id="resultTable">—</span>
+          </div>
+
+          <div class="result-info">
+            <div class="ri-row">
+              <div class="ri-label">Player</div>
+              <div class="ri-value" id="resultName">—</div>
+            </div>
+            <div class="ri-row">
+              <div class="ri-label">Role</div>
+              <div class="ri-value" id="resultJob">—</div>
+            </div>
+            <div class="ri-row">
+              <div class="ri-label">Drink</div>
+              <div class="ri-value" id="resultDrink">—</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 보너스 -->
+        <div id="bonusAnnounce" class="hidden">
+          <div class="bonus-sparkle">
+            <span class="bonus-crown-anim">👑</span>
+          </div>
+          <div class="bonus-title">MENU PICK BONUS</div>
+          <div class="bonus-winner" id="bonusWinner">—</div>
+          <div class="bonus-desc">TABLE <span id="bonusTable">—</span> · 오늘 메뉴 선택권을 획득했습니다!</div>
+          <div class="bonus-sub">전체 자리 배치에서 👑로 표시됩니다</div>
+        </div>
+
+        <div class="result-actions">
+          <button class="btn-gold" id="viewBoardBtn2">📋 전체 자리 배치 보기</button>
         </div>
       </div>
-
-      <div class="role-badges">
-        <span class="role-badge" style="color:#4fc3f7;border-color:#4fc3f7">💻 개발</span>
-        <span class="role-badge" style="color:#ce93d8;border-color:#ce93d8">🎨 아트</span>
-        <span class="role-badge" style="color:#80cbc4;border-color:#80cbc4">📋 기획</span>
-      </div>
-
-      <button class="btn btn-primary" id="btn-start" style="margin-top:28px">
-        🎲 자리 뽑으러 가기
-      </button>
-      <button class="btn btn-secondary" id="btn-view-board">
-        📋 전체 자리 배치 보기
-      </button>
-    </div>
-  </div>
-
-  <!-- ===== 폼 ===== -->
-  <div id="screen-form" class="screen hidden">
-    <div class="app-header">
-      <span class="big-emoji">✍️</span>
-      <div class="app-title">내 정보 입력</div>
-      <div class="app-sub">이름과 직군을 입력하고 자리를 뽑으세요</div>
     </div>
 
-    <div class="card">
-      <div class="form-group">
-        <label class="form-label">이름</label>
-        <input class="form-input" id="input-name" type="text" placeholder="이름을 입력하세요" maxlength="10" />
-      </div>
-      <div class="form-group">
-        <label class="form-label">직군</label>
-        <select class="form-select" id="select-role">
-          <option value="">직군 선택</option>
-          <option value="개발">💻 개발</option>
-          <option value="아트">🎨 아트</option>
-          <option value="기획">📋 기획</option>
-        </select>
-      </div>
-      <div class="form-group">
-        <label class="form-label">음주 여부</label>
-        <div class="drink-toggle">
-          <button type="button" class="drink-btn" id="drink-yes" data-value="음주">🍺 음주 희망</button>
-          <button type="button" class="drink-btn" id="drink-no" data-value="비음주">🧃 비음주</button>
-        </div>
-        <input type="hidden" id="select-drink" value="" />
-      </div>
-      <button class="btn btn-primary" id="btn-submit">
-        🎰 지금 뽑기!
-      </button>
-    </div>
-  </div>
+  </div><!-- /app -->
 
-  <!-- ===== 룰렛 ===== -->
-  <div id="screen-roulette" class="screen hidden">
-    <div class="roulette-wrap">
-      <div class="roulette-label">
-        <span id="roulette-name"></span>
-      </div>
-      <div class="roulette-subtitle">자리를 배정하는 중입니다...</div>
-
-      <div class="roulette-box">
-        <div id="roulette-display">?번 테이블</div>
-      </div>
-
-      <div class="roulette-hint">두근두근... 어느 테이블일까요? 🎲</div>
-    </div>
-  </div>
-
-  <!-- ===== 결과 ===== -->
-  <div id="screen-result" class="screen hidden">
-    <div class="app-header">
-      <div class="app-title">🎉 배정 완료!</div>
-    </div>
-
-    <div id="result-card">
-      <span id="result-emoji">🎨</span>
-      <div id="result-name">홍길동님</div>
-      <div id="result-role">아트</div>
-      <hr class="result-divider" />
-      <div id="result-accent">오늘의 자리는</div>
-      <span id="result-table">3번 테이블</span>
-      <div id="result-seat">전체 12번 자리</div>
-    </div>
-
-    <button class="btn btn-secondary" id="btn-view-board-2" style="margin-top:16px">
-      📋 전체 자리 배치 보기
-    </button>
-  </div>
-
-  <!-- ===== 전체 보드 ===== -->
-  <div id="screen-board" class="screen hidden">
+  <!-- 보드 오버레이 -->
+  <div id="boardOverlay" class="hidden">
     <div class="board-header">
-      <button class="btn-back" id="btn-back">← 돌아가기</button>
-      <div class="board-title">🪑 전체 자리 배치</div>
-      <div id="board-stats">로딩 중...</div>
+      <div class="board-header-title">TABLE OVERVIEW</div>
+      <div style="display:flex;gap:12px;align-items:center">
+        <div class="board-total"><span id="totalCount2">—</span> / 28</div>
+        <button class="btn-ghost" id="closeBoardBtn">✕ 닫기</button>
+      </div>
     </div>
-    <div id="tables-board"></div>
-
-    <div class="admin-row">
-      <button class="btn-admin" id="btn-reset">🔧 관리자: 초기화</button>
-    </div>
+    <div id="tablesGrid"></div>
   </div>
+
 </body>
 </html>
