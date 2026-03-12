@@ -157,6 +157,17 @@
         }
       });
 
+      // 이름 입력 실시간 필터 (한글 3글자만)
+      document.getElementById("nameInput").addEventListener("input", (e) => {
+        e.target.value = e.target.value.replace(/[^가-힣ㄱ-ㅎㅏ-ㅣ]/g, "").slice(0, 3);
+      });
+
+      // 이름 경고 팝업 닫기
+      document.getElementById("nameWarningClose").addEventListener("click", () => {
+        document.getElementById("nameWarningOverlay").classList.add("hidden");
+        document.getElementById("nameInput").focus();
+      });
+
       // 음주 선택
       document.getElementById("drinkYes").onclick = () => selectDrink("음주");
       document.getElementById("drinkNo").onclick = () => selectDrink("비음주");
@@ -171,7 +182,19 @@
         if (hasJoined) return;
         const name = document.getElementById("nameInput").value.trim();
         const job = document.getElementById("jobSelect").value;
-        if (!name) { shake(document.getElementById("nameInput")); return; }
+
+        // 이름 검증: 한글 3글자만 허용
+        const koreanOnly = /^[가-힣]{3}$/;
+        if (!name) {
+          shake(document.getElementById("nameInput"));
+          showNameWarning("이름을 입력해주세요.");
+          return;
+        }
+        if (!koreanOnly.test(name)) {
+          shake(document.getElementById("nameInput"));
+          showNameWarning("이름은 한글 3글자로 정확히 입력해주세요.\n예) 홍길동, 김철수");
+          return;
+        }
         if (!job) { shake(document.getElementById("jobSelect")); showToast("직군을 선택해주세요!"); return; }
         if (!drinkChoice) { shake(document.getElementById("drinkYes")); shake(document.getElementById("drinkNo")); showToast("음주 여부를 선택해주세요!"); return; }
 
@@ -456,6 +479,12 @@
       el.classList.add("shake");
       setTimeout(() => el.classList.remove("shake"), 500);
     }
+    function showNameWarning(msg) {
+      const overlay = document.getElementById("nameWarningOverlay");
+      document.getElementById("nameWarningMsg").textContent = msg;
+      overlay.classList.remove("hidden");
+    }
+
     function showToast(msg) {
       const t = document.getElementById("toast");
       t.textContent = msg;
@@ -1166,6 +1195,77 @@
       border-top: 1px solid var(--border-gold);
       margin: 24px 0;
     }
+
+    /* ===== 이름 경고 팝업 ===== */
+    .name-warning-overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 1000;
+      background: rgba(1, 10, 19, 0.92);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+      animation: fadeIn 0.2s ease;
+    }
+    .name-warning-box {
+      background: var(--surface);
+      border: 1px solid var(--gold-dim);
+      border-top: 3px solid var(--gold);
+      border-radius: 10px;
+      padding: 32px 28px;
+      max-width: 360px;
+      width: 100%;
+      text-align: center;
+      box-shadow: 0 0 60px #c89b3c22;
+      animation: popIn 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+    }
+    .nw-icon {
+      font-size: 40px;
+      margin-bottom: 12px;
+    }
+    .nw-title {
+      font-family: 'Rajdhani', sans-serif;
+      font-size: 16px;
+      font-weight: 700;
+      letter-spacing: 2px;
+      color: var(--gold);
+      text-transform: uppercase;
+      margin-bottom: 10px;
+    }
+    .nw-msg {
+      font-size: 14px;
+      color: var(--text-dim);
+      margin-bottom: 20px;
+      line-height: 1.6;
+    }
+    .nw-example {
+      background: #06090f;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 14px 16px;
+      margin-bottom: 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      text-align: left;
+    }
+    .nw-ex-label {
+      font-family: 'Rajdhani', sans-serif;
+      font-size: 10px;
+      letter-spacing: 3px;
+      color: var(--text-dim);
+      text-transform: uppercase;
+    }
+    .nw-ex-good {
+      font-size: 14px;
+      font-weight: 700;
+      color: #80cbc4;
+    }
+    .nw-ex-bad {
+      font-size: 13px;
+      color: #ff6b6b;
+    }
   </style>
 </head>
 <body>
@@ -1311,6 +1411,21 @@
     </div>
 
     <div id="tablesGrid"></div>
+  </div>
+
+  <!-- 이름 경고 팝업 -->
+  <div id="nameWarningOverlay" class="name-warning-overlay hidden">
+    <div class="name-warning-box">
+      <div class="nw-icon">✍️</div>
+      <div class="nw-title">이름을 정자로 입력해주세요</div>
+      <div class="nw-msg" id="nameWarningMsg">이름은 한글 3글자로 정확히 입력해주세요.</div>
+      <div class="nw-example">
+        <span class="nw-ex-label">올바른 예시</span>
+        <span class="nw-ex-good">✓ 홍길동 &nbsp; ✓ 김철수 &nbsp; ✓ 이영희</span>
+        <span class="nw-ex-bad">✗ 길동 &nbsp; ✗ hong &nbsp; ✗ ㅎㄱㄷ</span>
+      </div>
+      <button class="btn-gold" id="nameWarningClose" style="width:100%;margin-top:4px">확인 후 다시 입력</button>
+    </div>
   </div>
 
 </body>
